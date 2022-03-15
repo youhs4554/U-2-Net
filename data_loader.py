@@ -11,6 +11,8 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 from PIL import Image
 
+from utils import get_mask_label, load_annotation
+
 #==========================dataset load==========================
 class RescaleT(object):
 
@@ -218,7 +220,7 @@ class ToTensorLab(object):
 		tmpImg = tmpImg.transpose((2, 0, 1))
 		tmpLbl = label.transpose((2, 0, 1))
 
-		return {'imidx':torch.from_numpy(imidx), 'image': torch.from_numpy(tmpImg), 'label': torch.from_numpy(tmpLbl)}
+		return {'imidx':torch.from_numpy(imidx.copy()), 'image': torch.from_numpy(tmpImg.copy()), 'label': torch.from_numpy(tmpLbl.copy())}
 
 class SalObjDataset(Dataset):
 	def __init__(self,img_name_list,lbl_name_list,transform=None):
@@ -264,3 +266,30 @@ class SalObjDataset(Dataset):
 			sample = self.transform(sample)
 
 		return sample
+
+class PatSegDataset():
+    def __init__(self, annotation_file, 
+                 frame_root="/data/GaitData/RawFrames", transform=None):
+        
+        self.anno = load_annotation(annotation_file, frame_root)
+        self.transform = transform
+        
+    def __len__(self):
+        return len(self.anno)
+    
+    def __getitem__(self, idx):
+        filename = self.anno.path.iloc[idx]
+        
+        image  = Image.open(filename)
+        label  = get_mask_label(self.anno, filename, visualize=False)
+        
+        image = np.array(image)
+        label = np.array(label)[..., np.newaxis] # add last channel
+        imidx = np.array([idx])
+                
+        sample = {'imidx': imidx, 'image': image, 'label': label}
+        
+        if self.transform:
+            sample = self.transform(sample)
+                        
+        return sample

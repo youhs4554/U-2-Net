@@ -59,6 +59,8 @@ def main():
     image_dir = os.path.join(os.getcwd(), 'test_data', 'test_human_images')
     prediction_dir = os.path.join(os.getcwd(), 'test_data', 'test_human_images' + '_results' + os.sep)
     model_dir = os.path.join(os.getcwd(), 'saved_models', model_name+'_human_seg', model_name + '_human_seg.pth')
+    model_dir = "/data/GaitData/checkpoints/u2net/u2net_bce_itr_33000_train_0.110568_tar_0.014451.pth" # heavily pretrained model (10 epoch)
+    model_dir = "/data/GaitData/checkpoints/u2net/u2net_bce_itr_4000_train_0.184121_tar_0.024561.pth" # lightly pretrained model (1 epoch)
 
     img_name_list = glob.glob(image_dir + os.sep + '*')
     print(img_name_list)
@@ -81,7 +83,7 @@ def main():
         net = U2NET(3,1)
 
     if torch.cuda.is_available():
-        net.load_state_dict(torch.load(model_dir))
+        net.load_state_dict(torch.load(model_dir, map_location='cuda:0'))
         net.cuda()
     else:
         net.load_state_dict(torch.load(model_dir, map_location='cpu'))

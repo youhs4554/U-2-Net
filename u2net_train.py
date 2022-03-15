@@ -14,7 +14,7 @@ import numpy as np
 import glob
 import os
 
-from data_loader import Rescale
+from data_loader import PatSegDataset, Rescale
 from data_loader import RescaleT
 from data_loader import RandomCrop
 from data_loader import ToTensor
@@ -23,6 +23,11 @@ from data_loader import SalObjDataset
 
 from model import U2NET
 from model import U2NETP
+
+import horovod.torch as hvd
+# ------- 0. prepare distributed GPU computation --------
+hvd.init()
+torch.cuda.set_device(hvd.local_rank())
 
 # ------- 1. define loss function --------
 
@@ -47,56 +52,41 @@ def muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, labels_v):
 # ------- 2. set the directory of training dataset --------
 
 model_name = 'u2net' #'u2netp'
+anno_file = "./data/person_detection_and_tracking_results_drop-Gaitparams_PD.pkl"
+frame_root = "/data/GaitData/RawFrames"
+model_dir = f"/data/GaitData/checkpoints/{model_name}/"
+pretrained_model = "saved_models/u2net_human_seg/u2net_human_seg.pth"
 
-data_dir = os.path.join(os.getcwd(), 'train_data' + os.sep)
-tra_image_dir = os.path.join('DUTS', 'DUTS-TR', 'DUTS-TR', 'im_aug' + os.sep)
-tra_label_dir = os.path.join('DUTS', 'DUTS-TR', 'DUTS-TR', 'gt_aug' + os.sep)
-
-image_ext = '.jpg'
-label_ext = '.png'
-
-model_dir = os.path.join(os.getcwd(), 'saved_models', model_name + os.sep)
-
+if not os.path.exists(model_dir):
+    os.makedirs(model_dir, exist_ok=True)
+        
 epoch_num = 100000
-batch_size_train = 12
+batch_size_train = 32
 batch_size_val = 1
 train_num = 0
 val_num = 0
 
-tra_img_name_list = glob.glob(data_dir + tra_image_dir + '*' + image_ext)
-
-tra_lbl_name_list = []
-for img_path in tra_img_name_list:
-	img_name = img_path.split(os.sep)[-1]
-
-	aaa = img_name.split(".")
-	bbb = aaa[0:-1]
-	imidx = bbb[0]
-	for i in range(1,len(bbb)):
-		imidx = imidx + "." + bbb[i]
-
-	tra_lbl_name_list.append(data_dir + tra_label_dir + imidx + label_ext)
-
-print("---")
-print("train images: ", len(tra_img_name_list))
-print("train labels: ", len(tra_lbl_name_list))
-print("---")
-
-train_num = len(tra_img_name_list)
-
-salobj_dataset = SalObjDataset(
-    img_name_list=tra_img_name_list,
-    lbl_name_list=tra_lbl_name_list,
-    transform=transforms.Compose([
-        RescaleT(320),
-        RandomCrop(288),
-        ToTensorLab(flag=0)]))
-salobj_dataloader = DataLoader(salobj_dataset, batch_size=batch_size_train, shuffle=True, num_workers=1)
+salobj_dataset = PatSegDataset(anno_file, frame_root, 
+                   transform=transforms.Compose([
+                       RescaleT(320),
+                       RandomCrop(288),
+                       ToTensorLab(flag=0)]))
+sampler = torch.utils.data.distributed.DistributedSampler(
+    salobj_dataset,
+    num_replicas=hvd.size(),
+    rank=hvd.rank(), shuffle=True)
+salobj_dataloader = DataLoader(salobj_dataset, 
+                               batch_size=batch_size_train,
+                               sampler=sampler,
+                               num_workers=8)
+train_num = len(salobj_dataset)
 
 # ------- 3. define model --------
 # define the net
 if(model_name=='u2net'):
     net = U2NET(3, 1)
+    # load human-segmentation pretrained model
+    net.load_state_dict(torch.load(pretrained_model, map_location='cpu'))
 elif(model_name=='u2netp'):
     net = U2NETP(3,1)
 
@@ -106,6 +96,12 @@ if torch.cuda.is_available():
 # ------- 4. define optimizer --------
 print("---define optimizer...")
 optimizer = optim.Adam(net.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
+optimizer = hvd.DistributedOptimizer(
+    optimizer,
+    named_parameters=net.named_parameters())
+hvd.broadcast_parameters(
+    net.state_dict(),
+    root_rank=0)
 
 # ------- 5. training process --------
 print("---start training...")
@@ -113,7 +109,7 @@ ite_num = 0
 running_loss = 0.0
 running_tar_loss = 0.0
 ite_num4val = 0
-save_frq = 2000 # save the model every 2000 iterations
+save_frq = 1000 # save the model every 1000 iterations
 
 for epoch in range(0, epoch_num):
     net.train()
@@ -152,7 +148,7 @@ for epoch in range(0, epoch_num):
         del d0, d1, d2, d3, d4, d5, d6, loss2, loss
 
         print("[epoch: %3d/%3d, batch: %5d/%5d, ite: %d] train loss: %3f, tar: %3f " % (
-        epoch + 1, epoch_num, (i + 1) * batch_size_train, train_num, ite_num, running_loss / ite_num4val, running_tar_loss / ite_num4val))
+        epoch + 1, epoch_num, (i + 1) * (batch_size_train * hvd.size()), train_num, ite_num, running_loss / ite_num4val, running_tar_loss / ite_num4val))
 
         if ite_num % save_frq == 0:
 
