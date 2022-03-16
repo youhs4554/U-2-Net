@@ -1,8 +1,10 @@
+import os
 from PIL import Image, ImageDraw
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import pandas as pd
+from sklearn.model_selection import train_test_split
 
 mean = [0.485, 0.456, 0.406]
 std = [0.229, 0.224, 0.225]
@@ -84,3 +86,30 @@ def load_annotation(anno_file, frame_root=None):
     print("Total: ", len(anno))
     
     return anno
+
+def split_by_video(anno, test_size=0.05, random_state=27):
+    """
+        Split by name of video (i.e., to reduce redundancy)
+    """
+    fn = lambda row: os.path.dirname(row)
+    video_names = anno.path.apply(fn)
+    
+    anno_copy = anno.copy()
+    anno_copy['video_name'] = video_names
+    anno_copy.set_index('video_name', inplace=True)
+    
+    train_videos, test_videos = train_test_split(video_names.unique(), 
+                                                 test_size=test_size, random_state=random_state)
+    train_videos, val_videos = train_test_split(train_videos, 
+                                                test_size=test_size, random_state=random_state)
+    train_anno, val_anno, test_anno = anno_copy.loc[train_videos], anno_copy.loc[val_videos], anno_copy.loc[test_videos]
+    
+    # statistics
+    print("[FRAMES] - train: {}, val: {}, test: {}".format(len(train_anno), len(val_anno), len(test_anno)))
+    print("[VIDEOS] - train: {}, val: {}, test: {}".format(len(train_anno.index.unique()), len(val_anno.index.unique()), len(test_anno.index.unique())))
+    
+    return {
+        'train': train_anno,
+        'val': val_anno,
+        'test': test_anno,
+    }

@@ -10,19 +10,22 @@ from u2net_human_seg_test import normPRED
 from utils import get_detection, load_annotation
 from PIL import Image
 from skimage import io
+from skimage.filters import threshold_otsu
 
 ANNO_FILE = "./data/person_detection_and_tracking_results_drop-Gaitparams_PD.pkl"
 FRAME_ROOT = "/data/GaitData/RawFrames"
-# MODEL_DIR = "/data/GaitData/checkpoints/u2net/u2net_bce_itr_6000_train_0.168102_tar_0.022536.pth" # lightly pretrained model (2 epoch)
-MODEL_DIR = "/data/GaitData/checkpoints/u2net/u2net_bce_itr_4000_train_0.184121_tar_0.024561.pth" # lightly pretrained model (1 epoch)
-
-# MODEL_DIR = "/data/GaitData/checkpoints/u2net/u2net_bce_itr_33000_train_0.110568_tar_0.014451.pth" # heavily pretrained model (10 epoch)
+MODEL_DIR = "/data/GaitData/checkpoints/u2net/u2net_bce_itr_1000_train_1.462870_tar_0.205207.pth" # early stoped model (4 epoch, 1000 iter)
 
 # UI placeholders
 slider_ph = st.empty()
+col1, col2 = st.columns(2)
+with col1:
+    image_ph = st.empty()
+with col2:
+    pred_ph = st.empty()
+    
+st.markdown(f'<p style="font-family:sans-serif; color:yellow; font-size: 24px;">File name</p>', unsafe_allow_html=True)
 filepath_ph = st.empty()
-image_ph = st.empty()
-pred_ph = st.empty()
 
 @st.cache
 def load_data():
@@ -30,7 +33,7 @@ def load_data():
         Load dataset and model
     """
     test_dataset = PatSegDataset(ANNO_FILE, FRAME_ROOT, transform=transforms.Compose([RescaleT(320),
-                                                                      ToTensorLab(flag=0)]))
+                                                                      ToTensorLab(flag=0)]), split_='test')
     
     net = U2NET(3,1)
     if torch.cuda.is_available():
@@ -44,9 +47,9 @@ def render_img(value):
     anno = test_dataset.anno  # annotation dataframe
     path = anno.path.iloc[value]
     # filepath_ph.text(path) # display filename
-    filepath_ph.markdown(f'<p style="font-family:sans-serif; color:Lime; font-size: 24px;">{path}</p>', unsafe_allow_html=True)
+    filepath_ph.markdown(f'<p style="font-family:sans-serif; font-size: 18px;">{path}</p>', unsafe_allow_html=True)
     detection = get_detection(anno, path, visualize=True)
-    detection = detection.resize((detection.width//2,detection.height//2),resample=Image.BILINEAR)
+    detection = detection.resize((detection.width,detection.height),resample=Image.BILINEAR)
     image_ph.image(detection)
     
 def render_result(value):
@@ -66,16 +69,24 @@ def render_result(value):
     predict = pred
     predict = predict.squeeze()
     predict_np = predict.cpu().data.numpy()
-
-    # TODO: otsu threshold
-    from skimage.filters import threshold_otsu
-    thresh = threshold_otsu(predict_np)
-    binary = (predict_np > thresh).astype(float)
     
-    im = Image.fromarray(binary*255).convert('RGB')
+    result = predict_np
+    
+    st.sidebar.text("Binarization (using Otsu)")
+    col1, col2, *_ = st.sidebar.columns(5)
+    with col1:
+        if st.button('On', kwargs={'width': 50}):
+            # TODO: control with btn
+            thresh = threshold_otsu(predict_np)
+            result = (predict_np > thresh).astype(float)
+    with col2:
+        if st.button('Off'):
+            result = predict_np
+    
+    im = Image.fromarray(result*255).convert('RGB')
     img_name = test_dataset.anno.path.iloc[value] # original image
     image = io.imread(img_name) 
-    imo = im.resize((image.shape[1]//2,image.shape[0]//2),resample=Image.BILINEAR)
+    imo = im.resize((image.shape[1],image.shape[0]),resample=Image.BILINEAR)
     
     pred_ph.image(imo)
     del d1,d2,d3,d4,d5,d6,d7
@@ -89,18 +100,27 @@ data_load_state.text("")
 if 'idx' not in st.session_state:
     st.session_state['idx'] = 0
 
-search_str = st.text_input('Search', '/data/GaitData/RawFrames/2074951_test_1_trial_3/thumb0174.jpg')
-st.session_state['idx'] = test_dataset.anno.query("path == @search_str").index.values.item()
+search_str = os.path.join(FRAME_ROOT, st.sidebar.text_input('Search', '2074951_test_1_trial_3/thumb0174.jpg'))
+anno_copy = test_dataset.anno.copy()
+anno_copy.reset_index(inplace=True)
+matched = anno_copy.query("path == @search_str").index
+if len(matched) > 0:
+    st.session_state['idx'] = matched.values.item()
+else:
+    st.warning('{} is not found!'.format(search_str))
+    st.session_state['idx'] = 0
 
-value = slider_ph.slider("Frame Index", 0, len(test_dataset), st.session_state['idx'], 1)
+
+value = slider_ph.slider("Index", 0, len(test_dataset), st.session_state['idx'], 1)
 
 render_img(value)
 render_result(value)
 
-if st.button('PLAY'):
+st.sidebar.text('Control')
+play_btn = st.sidebar.button('Play')
+if play_btn:
     for x in range(50):
         time.sleep(.3)
-        value = slider_ph.slider("Frame Index", 0, len(test_dataset), value + 1, 1)
+        value = slider_ph.slider("Index", 0, len(test_dataset), value + 1, 1)
         render_img(value)
-        # update session-state
-        st.session_state['idx'] = value
+        st.session_state['idx'] = value # update session-state

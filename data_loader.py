@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 from PIL import Image
 
-from utils import get_mask_label, load_annotation
+from utils import get_mask_label, load_annotation, split_by_video
 
 #==========================dataset load==========================
 class RescaleT(object):
@@ -269,9 +269,13 @@ class SalObjDataset(Dataset):
 
 class PatSegDataset():
     def __init__(self, annotation_file, 
-                 frame_root="/data/GaitData/RawFrames", transform=None):
+                 frame_root="/data/GaitData/RawFrames", transform=None, 
+                 split_='train'):
         
-        self.anno = load_annotation(annotation_file, frame_root)
+        assert split_ in ['train', 'val', 'test'], "invalid split name"
+        
+        all_anno = load_annotation(annotation_file, frame_root)
+        self.anno = split_by_video(all_anno)[split_]
         self.transform = transform
         
     def __len__(self):
