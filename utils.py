@@ -87,6 +87,53 @@ def load_annotation(anno_file, frame_root=None):
     
     return anno
 
+def load_target_data(
+    annotation_file,
+    target_file, 
+    target_columns = [
+        # stride length
+        'Stride Length(cm)/L', 'Stride Length(cm)/R',
+        # step width
+        'HH Base Support(cm)/L', 'HH Base Support(cm)/R',
+        # gait velocity
+        'Velocity',
+        # cadence
+        'Cadence',
+        # toe in/out angle
+        'Toe In / Out/L', 'Toe In / Out/R', 
+        # stride time
+        'Cycle Time(sec)/L', 'Cycle Time(sec)/R', 
+        # stance phase (%)
+        'Stance % of Cycle/L', 'Stance % of Cycle/R',
+        # swing phase (%) 
+        'Swing % of Cycle/L', 'Swing % of Cycle/R'
+]):
+    def pid2vid(pid):
+        num, test_id, trial_id = pid.split('_')
+        return '_'.join([num, 'test', test_id, 'trial', trial_id])
+    
+    df = pd.read_pickle(target_file)[target_columns]
+    df.index.name = "vids"
+    df.reset_index(inplace=True)    
+    df.vids = df.vids.apply(pid2vid)
+    df.set_index('vids', inplace=True)
+    
+    anno = pd.read_pickle(annotation_file)
+    anno.set_index('vids', inplace=True)
+    anno.index.name = 'vids'
+    
+    video_names = anno.index.unique()
+    
+    df = df.reindex(video_names)
+    df.dropna(axis=0, inplace=True) # drop Nan
+    
+    # angle normalization; change offset of angle
+    change_offset = lambda x: -x+90
+    cols = ['Toe In / Out/L', 'Toe In / Out/R']
+    df[cols] = df[cols].apply(change_offset)
+
+    return df
+
 def split_by_video(anno, test_size=0.05, random_state=27):
     """
         Split by name of video (i.e., to reduce redundancy)

@@ -1,6 +1,84 @@
+import copy
+import inspect
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from .inflate import *
+
+class Unit3D(nn.Module):
+
+    def __init__(self, in_channels,
+                 output_channels,
+                 kernel_shape=(1, 1, 1),
+                 stride=(1, 1, 1),
+                 padding=0,
+                 activation_fn=F.relu,
+                 use_batch_norm=True,
+                 use_bias=False,
+                 name='unit_3d'):
+
+        """Initializes Unit3D module."""
+        super(Unit3D, self).__init__()
+
+        self._output_channels = output_channels
+        self._kernel_shape = kernel_shape
+        self._stride = stride
+        self._use_batch_norm = use_batch_norm
+        self._activation_fn = activation_fn
+        self._use_bias = use_bias
+        self.name = name
+        self.padding = padding
+
+        self.conv3d = nn.Conv3d(in_channels=in_channels,
+                                out_channels=self._output_channels,
+                                kernel_size=self._kernel_shape,
+                                stride=self._stride,
+                                padding=0, # we always want padding to be 0 here. We will dynamically pad based on input size in forward function
+                                bias=self._use_bias)
+
+        if self._use_batch_norm:
+            self.bn = nn.BatchNorm3d(self._output_channels, eps=0.001, momentum=0.01)
+
+    def compute_pad(self, dim, s):
+        if s % self._stride[dim] == 0:
+            return max(self._kernel_shape[dim] - self._stride[dim], 0)
+        else:
+            return max(self._kernel_shape[dim] - (s % self._stride[dim]), 0)
+
+
+    def forward(self, x):
+        # compute 'same' padding
+        (batch, channel, t, h, w) = x.size()
+        #print t,h,w
+        out_t = np.ceil(float(t) / float(self._stride[0]))
+        out_h = np.ceil(float(h) / float(self._stride[1]))
+        out_w = np.ceil(float(w) / float(self._stride[2]))
+        #print out_t, out_h, out_w
+        pad_t = self.compute_pad(0, t)
+        pad_h = self.compute_pad(1, h)
+        pad_w = self.compute_pad(2, w)
+        #print pad_t, pad_h, pad_w
+
+        pad_t_f = pad_t // 2
+        pad_t_b = pad_t - pad_t_f
+        pad_h_f = pad_h // 2
+        pad_h_b = pad_h - pad_h_f
+        pad_w_f = pad_w // 2
+        pad_w_b = pad_w - pad_w_f
+
+        pad = (pad_w_f, pad_w_b, pad_h_f, pad_h_b, pad_t_f, pad_t_b)
+        #print x.size()
+        #print pad
+        x = F.pad(x, pad)
+        #print x.size()
+
+        x = self.conv3d(x)
+        if self._use_batch_norm:
+            x = self.bn(x)
+        if self._activation_fn is not None:
+            x = self._activation_fn(x)
+        return x
 
 class REBNCONV(nn.Module):
     def __init__(self,in_ch=3,out_ch=3,dirate=1):
@@ -20,7 +98,7 @@ class REBNCONV(nn.Module):
 ## upsample tensor 'src' to have the same spatial size with tensor 'tar'
 def _upsample_like(src,tar):
 
-    src = F.upsample(src,size=tar.shape[2:],mode='bilinear')
+    src = F.upsample(src,size=tar.shape[2:],mode='trilinear' if src.dim() == 5 else 'bilinear')
 
     return src
 
@@ -30,6 +108,7 @@ class RSU7(nn.Module):#UNet07DRES(nn.Module):
 
     def __init__(self, in_ch=3, mid_ch=12, out_ch=3):
         super(RSU7,self).__init__()
+        self.out_ch = out_ch
 
         self.rebnconvin = REBNCONV(in_ch,out_ch,dirate=1)
 
@@ -107,6 +186,7 @@ class RSU6(nn.Module):#UNet06DRES(nn.Module):
 
     def __init__(self, in_ch=3, mid_ch=12, out_ch=3):
         super(RSU6,self).__init__()
+        self.out_ch = out_ch
 
         self.rebnconvin = REBNCONV(in_ch,out_ch,dirate=1)
 
@@ -176,6 +256,7 @@ class RSU5(nn.Module):#UNet05DRES(nn.Module):
 
     def __init__(self, in_ch=3, mid_ch=12, out_ch=3):
         super(RSU5,self).__init__()
+        self.out_ch = out_ch
 
         self.rebnconvin = REBNCONV(in_ch,out_ch,dirate=1)
 
@@ -234,6 +315,7 @@ class RSU4(nn.Module):#UNet04DRES(nn.Module):
 
     def __init__(self, in_ch=3, mid_ch=12, out_ch=3):
         super(RSU4,self).__init__()
+        self.out_ch = out_ch
 
         self.rebnconvin = REBNCONV(in_ch,out_ch,dirate=1)
 
@@ -282,6 +364,7 @@ class RSU4F(nn.Module):#UNet04FRES(nn.Module):
 
     def __init__(self, in_ch=3, mid_ch=12, out_ch=3):
         super(RSU4F,self).__init__()
+        self.out_ch = out_ch
 
         self.rebnconvin = REBNCONV(in_ch,out_ch,dirate=1)
 
@@ -317,7 +400,7 @@ class RSU4F(nn.Module):#UNet04FRES(nn.Module):
 ##### U^2-Net ####
 class U2NET(nn.Module):
 
-    def __init__(self,in_ch=3,out_ch=1):
+    def __init__(self,in_ch=3,out_ch=1,mode='u2net'):
         super(U2NET,self).__init__()
 
         self.stage1 = RSU7(in_ch,32,64)
@@ -352,9 +435,13 @@ class U2NET(nn.Module):
         self.side6 = nn.Conv2d(512,out_ch,3,padding=1)
 
         self.outconv = nn.Conv2d(6*out_ch,out_ch,1)
-
-    def forward(self,x):
-
+        
+        assert mode in ['feature', 'u2net']
+        
+        if mode == 'feature':
+            self.forward = self.encoder
+        
+    def encoder(self, x):
         hx = x
 
         #stage 1
@@ -379,6 +466,12 @@ class U2NET(nn.Module):
 
         #stage 6
         hx6 = self.stage6(hx)
+        return hx1, hx2, hx3, hx4, hx5, hx6
+
+
+    def forward(self,x):
+        #-------------------- encoder --------------------        
+        hx1, hx2, hx3, hx4, hx5, hx6 = self.encoder(x)
         hx6up = _upsample_like(hx6,hx5)
 
         #-------------------- decoder --------------------
@@ -419,6 +512,128 @@ class U2NET(nn.Module):
 
         return F.sigmoid(d0), F.sigmoid(d1), F.sigmoid(d2), F.sigmoid(d3), F.sigmoid(d4), F.sigmoid(d5), F.sigmoid(d6)
 
+class _RSULayer3d(nn.Module):
+    def __init__(self, rsulayer2d):
+        super().__init__()
+        rsulayer3d = copy.deepcopy(rsulayer2d)
+        for name, child in rsulayer2d.named_children():
+            if isinstance(child, torch.nn.MaxPool2d):
+                setattr(rsulayer3d, name, inflate_pool(child, time_dim=1))
+            elif isinstance(child, torch.nn.BatchNorm2d):
+                setattr(rsulayer3d, name, inflate_batch_norm(child))
+            elif isinstance(child, torch.nn.ReLU):
+                setattr(rsulayer3d, name, child)
+            elif isinstance(child, torch.nn.Conv2d):
+                kernel_size = child.kernel_size[0]
+                if kernel_size > 1:
+                    # Pad input in the time dimension
+                    assert kernel_size % 2 == 1, 'kernel size should be\
+                            odd be got {}'.format(kernel_size)
+                    pad_size = int(kernel_size / 2)
+                    pad_time = torch.nn.ReplicationPad3d((0, 0, 0, 0, pad_size,
+                                                pad_size))
+                    setattr(rsulayer3d, name, nn.Sequential(pad_time, inflate_conv(child, kernel_size)))
+                else:
+                    setattr(rsulayer3d, name, inflate_conv(child, 1))
+            else:
+                raise ValueError(
+                    '{} is not among handled layer types'.format(type(child)))
+        
+        self.model = rsulayer3d
+    
+    def forward(self, x):
+        return self.model(x)
+        
+
+class Inflated_U2Net(nn.Module):
+    def __init__(self, unet_2d, pretrained=True):
+        super().__init__()
+        self.pretrained = pretrained
+        if pretrained:
+            # TODO: access 'MODEL_DIR' using global config file
+            MODEL_DIR = "/data/GaitData/checkpoints/u2net/u2net_bce_itr_1000_train_1.462870_tar_0.205207.pth" # early stoped model (4 epoch, 1000 iter)
+            unet_2d.load_state_dict(torch.load(MODEL_DIR, map_location='cpu'))
+        unet_3d = copy.deepcopy(unet_2d)
+        for name, child in unet_2d.named_children():
+            if child.__class__.__name__.startswith('RSU'):
+                # nested conv block
+                rsu_3d = copy.deepcopy(child)
+                for nested_name, nested_child in child.named_children():
+                    if isinstance(nested_child, torch.nn.MaxPool2d):
+                        setattr(rsu_3d, nested_name, inflate_pool(nested_child, time_dim=1))
+                    elif isinstance(nested_child, REBNCONV):
+                        setattr(rsu_3d, nested_name, _RSULayer3d(nested_child))
+                    else:
+                        raise ValueError(
+                    '{} is not among handled nested layer types'.format(type(nested_child)))
+                setattr(unet_3d, name, rsu_3d)
+            elif isinstance(child, torch.nn.MaxPool2d):
+                setattr(unet_3d, name, inflate_pool(child, time_dim=1))
+            elif isinstance(child, torch.nn.BatchNorm2d):
+                setattr(unet_3d, name, inflate_batch_norm(child))
+            elif isinstance(child, torch.nn.Conv2d):
+                kernel_size = child.kernel_size[0]
+                if kernel_size > 1:
+                    # Pad input in the time dimension
+                    assert kernel_size % 2 == 1, 'kernel size should be\
+                            odd be got {}'.format(kernel_size)
+                    pad_size = int(kernel_size / 2)
+                    pad_time = torch.nn.ReplicationPad3d((0, 0, 0, 0, pad_size,
+                                                pad_size))
+                    setattr(unet_3d, name, nn.Sequential(pad_time, inflate_conv(child, kernel_size)))
+                else:
+                    setattr(unet_3d, name, inflate_conv(child, 1))
+            else:
+                raise ValueError(
+                    '{} is not among handled layer types'.format(type(child)))
+                
+        # disable decoder operations of U2-Net for saving computation overhead
+        for name, child in unet_3d.named_children():
+            if name.endswith('d'):
+                setattr(unet_3d, name, nn.Identity())
+        self.model = unet_3d
+    
+    def train(self, mode=True):
+        if self.pretrained:
+            print("Freezing pretrained network!")
+            super().train(mode=False)
+            for p in self.parameters():
+                p.requires_grad = False
+        else:
+            # default action
+            super().train(mode)
+    
+    def forward(self, x):
+        return self.model(x)
+
+class Inflated_U2Net_Distill(nn.Module):
+    def __init__(self, num_output=14):
+        super().__init__()
+        unet_2d        = U2NET(3,1)
+        self.u2net_te  = Inflated_U2Net(copy.deepcopy(unet_2d), pretrained=True) # teacher network
+        self.u2net_st  = Inflated_U2Net(copy.deepcopy(unet_2d), pretrained=False) # student network
+        encoder_dim = self.u2net_st.model.stage6.out_ch
+        
+        self.avgpool = nn.AvgPool3d(kernel_size=[8, 4, 4], stride=[8, 1, 1])
+        self.fc = Unit3D(in_channels=encoder_dim, output_channels=num_output,
+                             kernel_shape=[1, 1, 1],
+                             padding=0,
+                             activation_fn=None,
+                             use_batch_norm=False,
+                             use_bias=True,
+                             name='fc')
+    
+    def forward(self, x):
+        student_out = self.u2net_st.model.encoder(x)[-1]
+        with torch.no_grad():
+            teacher_out = self.u2net_te.model.encoder(x)[-1]
+        
+        distill_info = {'student': student_out, 'teacher': teacher_out}
+        x = self.fc(self.avgpool(student_out))
+        x = x.squeeze(3).squeeze(3)
+        return x, distill_info
+            
+        
 ### U^2-Net small ###
 class U2NETP(nn.Module):
 

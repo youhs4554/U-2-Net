@@ -13,8 +13,9 @@ from skimage import io
 from skimage.filters import threshold_otsu
 
 ANNO_FILE = "./data/person_detection_and_tracking_results_drop-Gaitparams_PD.pkl"
-FRAME_ROOT = "/data/GaitData/RawFrames"
+FRAME_ROOT = "/data/GaitData/frames"
 MODEL_DIR = "/data/GaitData/checkpoints/u2net/u2net_bce_itr_1000_train_1.462870_tar_0.205207.pth" # early stoped model (4 epoch, 1000 iter)
+MODEL_DIR = "/data/GaitData/checkpoints/u2net/u2net_bce_itr_34000_train_0.108566_tar_0.014123.pth" # heavily trained model (34000 iter)
 
 # UI placeholders
 slider_ph = st.empty()
@@ -33,7 +34,7 @@ def load_data():
         Load dataset and model
     """
     test_dataset = PatSegDataset(ANNO_FILE, FRAME_ROOT, transform=transforms.Compose([RescaleT(320),
-                                                                      ToTensorLab(flag=0)]), split_='test')
+                                                                      ToTensorLab(flag=0)]), split_='val')
     
     net = U2NET(3,1)
     if torch.cuda.is_available():

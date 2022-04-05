@@ -1,6 +1,9 @@
 # data loader
 from __future__ import print_function, division
 import glob
+import os
+from pickle import dump
+from sklearn.preprocessing import StandardScaler
 import torch
 from skimage import io, transform, color
 import numpy as np
@@ -11,7 +14,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 from PIL import Image
 
-from utils import get_mask_label, load_annotation, split_by_video
+from utils import get_mask_label, load_annotation, load_target_data, split_by_video
 
 #==========================dataset load==========================
 class RescaleT(object):
@@ -268,15 +271,34 @@ class SalObjDataset(Dataset):
 		return sample
 
 class PatSegDataset():
-    def __init__(self, annotation_file, 
-                 frame_root="/data/GaitData/RawFrames", transform=None, 
-                 split_='train'):
+    def __init__(self, annotation_file,
+                 frame_root="/data/GaitData/frames", transform=None, 
+                 split_='train', target_file=None):
         
         assert split_ in ['train', 'val', 'test'], "invalid split name"
-        
         all_anno = load_annotation(annotation_file, frame_root)
         self.anno = split_by_video(all_anno)[split_]
+        if target_file is not None:
+            # save train/val/test gait varible target file (sep=" ")
+            target_data = load_target_data(annotation_file, target_file)
+                        
+            all_splits = split_by_video(all_anno)
+            for s in ['train', 'val', 'test']:
+                 with open('data/{}list.txt'.format(s), 'w') as f:
+                     current_split = all_splits[s].path.apply(lambda x: os.path.basename(os.path.dirname(x)))
+                     if s == 'train':
+                         # standardization for training dataset
+                         scaler = StandardScaler()
+                         scaler.fit(target_data.reindex(current_split.unique()).values)
+                         dump(scaler, open('data/scaler.pkl', 'wb')) # save scaler for testing
+                     for vid in current_split.unique():
+                         if vid in target_data.index:
+                             target_row = target_data.loc[vid]
+                             target_row = scaler.transform(target_row.values[np.newaxis, :]).flatten().astype(str)
+                             row = " ".join([vid + ".avi"] + target_row.tolist()) + "\n"
+                             f.write(row)
         self.transform = transform
+        self.split_ = split_
         
     def __len__(self):
         return len(self.anno)
